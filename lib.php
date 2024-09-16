@@ -35,9 +35,126 @@ function payactiviti_supports($feature)
             return true;
         case FEATURE_GRADE_HAS_GRADE:
             return true;
-        default:
-            return null;
     }
+}
+
+function payactiviti_pay(
+    $payactivitiName,
+    $payactivitiPrice,
+    $payactivitiReferenceId,
+    $buyerName = '',
+) {
+    $environtment = get_config('payactiviti', 'environment');
+    $ipaymu_apikey = get_config('payactiviti', 'ipaymu_apikey');
+    $ipaymu_va = get_config('payactiviti', 'ipaymu_va');
+    $method       = 'POST';
+    $logo_url = new moodle_url('/theme/image.php/boost/theme/1726313550/favicon');
+
+    if ($environtment == 'sandbox') {
+        $url = 'https://sandbox.ipaymu.com/api/v2/payment';
+    } else {
+        $url = 'https://my.ipaymu.com/api/v2/payment';
+    }
+    //Request Body//
+    $body['product']    = array($payactivitiName);
+    $body['qty']        = array('1');
+    $body['price']      = array($payactivitiPrice);
+    $body['expired'] = 24;
+    $body['buyerName']  = $buyerName;
+    $body['notifyUrl']  = 'https://hook.amfad.engineer/ipaymu_moodle';
+    $body['referenceId'] = $payactivitiReferenceId;
+    //End Request Body//
+
+    //Generate Signature
+    // *Don't change this
+    $jsonBody     = json_encode($body, JSON_UNESCAPED_SLASHES);
+    $requestBody  = strtolower(hash('sha256', $jsonBody));
+    $stringToSign = strtoupper($method) . ':' . $ipaymu_va . ':' . $requestBody . ':' . $ipaymu_apikey;
+    $signature    = hash_hmac('sha256', $stringToSign, $ipaymu_apikey);
+    $timestamp    = Date('YmdHis');
+    //End Generate Signature
+
+    $ch = curl_init($url);
+
+    $headers = array(
+        'Accept: application/json',
+        'Content-Type: application/json',
+        'va: ' . $ipaymu_va,
+        'signature: ' . $signature,
+        'timestamp: ' . $timestamp
+    );
+
+    curl_setopt($ch, CURLOPT_HEADER, false);
+    curl_setopt($ch, CURLOPT_HTTPHEADER, $headers);
+
+    curl_setopt($ch, CURLOPT_POST, count($body));
+    curl_setopt($ch, CURLOPT_POSTFIELDS, $jsonBody);
+
+    curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+    curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
+    curl_setopt($ch, CURLOPT_SSL_VERIFYHOST, false);
+    $err = curl_error($ch);
+    $ret = curl_exec($ch);
+    curl_close($ch);
+
+    if ($err) {
+        return null;
+    } else {
+        //Response
+        $ret = json_decode($ret);
+        return $ret;
+        //End Response
+    }
+}
+
+function payactiviti_update_grades($payactiviti, $userid = 0, $nullifnone = true)
+{
+    global $CFG, $DB;
+    require_once($CFG->libdir . '/gradelib.php');
+    // Updating user's grades is not supported at this time in the logic module.
+    return;
+}
+
+function payactiviti_grade_item_update($payactiviti, $grades = null)
+{
+    global $CFG;
+    if (!function_exists('grade_update')) { //workaround for buggy PHP versions
+        require_once($CFG->libdir . '/gradelib.php');
+    }
+
+    if (property_exists($payactiviti, 'cm_id')) { //it may not be always present
+        $params = array('itemname' => $payactiviti->name, 'idnumber' => $payactiviti->cm_id);
+    } else {
+        $params = array('itemname' => $payactiviti->name);
+    }
+
+    if ($payactiviti->mode != 'practice') {
+        $params['gradetype'] = GRADE_TYPE_VALUE;
+        $params['grademax'] = 100;
+        $params['grademin'] = 0;
+    } else {
+        return;
+    }
+
+    if ($grades === 'reset') {
+        $params['reset'] = true;
+        $grades = null;
+    } else if (!empty($grades)) {
+        // Need to calculate raw grade (Note: $grades has many forms)
+        if (is_object($grades)) {
+            $grades = array($grades->userid => $grades);
+        } else if (array_key_exists('userid', $grades)) {
+            $grades = array($grades['userid'] => $grades);
+        }
+
+        foreach ($grades as $key => $grade) {
+            if (!is_array($grade)) {
+                $grades[$key] = $grade = (array) $grade;
+            }
+        }
+    }
+
+    return grade_update('mod/payactiviti', $payactiviti->course, 'mod', 'payactiviti', $payactiviti->id, 0, $grades, $params);
 }
 
 /**
